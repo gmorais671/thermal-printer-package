@@ -102,6 +102,43 @@ class MethodChannelThermalPrinterPkg extends ThermalPrinterPkgPlatform {
     }
   }
 
+  /// Gera barcode ITF via ZXing nativo. Retorna PNG como Uint8List.
+  /// [widthPx] deve ser igual ao paperWidthDots (384 ou 576).
+  Future<Uint8List> generateItfBarcode({
+    required String data,
+    int widthPx = 576,
+    int heightPx = 100,
+    int margin = 10,
+  }) async {
+    try {
+      final result = await methodChannel.invokeMethod<Uint8List>('generateItfBarcode', {
+        'data': data,
+        'widthPx': widthPx,
+        'heightPx': heightPx,
+        'margin': margin,
+      });
+      if (result == null) throw Exception('generateItfBarcode retornou null');
+      return result;
+    } on PlatformException catch (e) {
+      throw Exception('Erro ao gerar barcode: ${e.message}');
+    }
+  }
+
+  /// Imprime PNG raster via POS_PrintPicture.
+  Future<bool> printRasterImage({
+    required Uint8List bytes,
+    int paperWidthDots = 576,
+  }) async {
+    try {
+      return await methodChannel.invokeMethod<bool>('printRasterImage', {
+        'bytes': bytes,
+        'paperWidthDots': paperWidthDots,
+      }) ?? false;
+    } on PlatformException catch (e) {
+      throw Exception('Erro ao imprimir raster: ${e.message}');
+    }
+  }
+
   /// Define alinhamento (0=esquerda, 1=centro, 2=direita)
   Future<bool> setAlign(int align) async {
     try {

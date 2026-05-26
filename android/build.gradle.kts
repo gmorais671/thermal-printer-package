@@ -75,4 +75,7 @@ dependencies {
     testImplementation("org.mockito:mockito-core:5.0.0")
 
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))
+
+    // ZXing para geração do código de barras ITF
+    implementation("com.google.zxing:core:3.5.3")
 }

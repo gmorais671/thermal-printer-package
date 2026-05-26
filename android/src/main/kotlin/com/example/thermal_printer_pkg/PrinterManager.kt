@@ -1,9 +1,16 @@
 package com.example.thermal_printer_pkg
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.util.Log
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.MultiFormatWriter
 import com.lvrenyang.io.BTPrinting
 import com.lvrenyang.io.Pos
+import java.io.ByteArrayOutputStream
 
 class PrinterManager(private val context: Context) {
     private var btPrinter: BTPrinting? = null
@@ -103,6 +110,81 @@ class PrinterManager(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao enviar bytes: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Gera o barcode ITF com ZXing e retorna PNG como ByteArray.
+     * widthPx/heightPx em pixels (dots da impressora).
+     * margin = quiet zone em módulos (padrão 10).
+     */
+    fun generateItfBarcode(
+        data: String,
+        widthPx: Int = 576,
+        heightPx: Int = 100,
+        margin: Int = 10
+    ): ByteArray? {
+        return try {
+            val clean = data.replace(Regex("[^0-9]"), "")
+            if (clean.length != 44) {
+                Log.e(TAG, "ITF deve ter 44 dígitos. Recebido: ${clean.length}")
+                return null
+            }
+
+            val hints = mapOf(
+                EncodeHintType.MARGIN to margin,
+                EncodeHintType.ERROR_CORRECTION to null
+            ).filterValues { it != null }
+
+            val bitMatrix = MultiFormatWriter().encode(
+                clean,
+                BarcodeFormat.ITF,
+                widthPx,
+                heightPx,
+                hints
+            )
+
+            // Converte BitMatrix → Bitmap 1-bit (preto/branco puro, sem antialias)
+            val bitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
+            for (x in 0 until widthPx) {
+                for (y in 0 until heightPx) {
+                    bitmap.setPixel(x, y, if (bitMatrix.get(x, y)) Color.BLACK else Color.WHITE)
+                }
+            }
+
+            val stream = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+            Log.d(TAG, "✅ Barcode ITF gerado: ${widthPx}x${heightPx}px, ${stream.size()} bytes")
+            stream.toByteArray()
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao gerar barcode ZXing: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Imprime imagem PNG (ByteArray) via POS_PrintPicture.
+     * paperWidthDots: 384 (58mm) ou 576 (80mm).
+     */
+    fun printRasterImage(pngBytes: ByteArray, paperWidthDots: Int = 576): Boolean {
+        return try {
+            if (btPrinter == null || pos == null) {
+                Log.e(TAG, "Impressora não conectada")
+                return false
+            }
+
+            val bitmap = android.graphics.BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes.size)
+            if (bitmap == null) {
+                Log.e(TAG, "Falha ao decodificar PNG")
+                return false
+            }
+
+            Log.d(TAG, "🖨️ Imprimindo raster: ${bitmap.width}x${bitmap.height}px, paper=$paperWidthDots")
+            pos?.POS_PrintPicture(bitmap, paperWidthDots, 0)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao imprimir raster: ${e.message}", e)
             false
         }
     }

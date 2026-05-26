@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:thermal_printer_pkg/thermal_printer_pkg.dart';
+import 'package:thermal_printer_pkg/thermal_printer_pkg_method_channel.dart';
 
 class PrinterScreen extends StatefulWidget {
   const PrinterScreen({super.key, required this.device});
@@ -13,16 +16,43 @@ class PrinterScreen extends StatefulWidget {
 class _PrinterScreenState extends State<PrinterScreen> {
   final GlobalKey _boletoKey = GlobalKey();
   late final PrinterService _printerService;
+  late final NativeBluetoothAdapter _nativeAdapter;
+  final _methodChannel = MethodChannelThermalPrinterPkg();
+
   final ScrollController _logScrollController = ScrollController();
   final List<_LogEntry> _logs = [];
 
   bool _isConnected = false;
   bool _isBusy = false;
 
+  /// PNG do barcode gerado via ZXing — injetado no BoletoWidget antes da captura.
+  Uint8List? _barcodePng;
+
+  /// Largura da bobina em dots. Ajuste conforme a impressora conectada.
+  /// 384 = 58mm | 576 = 80mm
+  static const int _paperWidthDots = 384;
+
+  // Dados do boleto de teste — centralizados para não duplicar
+  static final BoletoData _boletoData = BoletoData(
+    beneficiario: 'ABACUS SOLUTIONS TECH LTDA',
+    pagador: 'USUÁRIO TESTE INTERFACE',
+    valor: 1250.50,
+    vencimento: DateTime(2025, 6, 30),
+    linhaDigitavel: '23793.38128 60033.062508 63000.063317 9 95020000125050',
+    codigoBarras: '23799950200001250503381260033062508630000633',
+    nossoNumero: '9 95020000125050',
+    instrucoes: [
+      'Não receber após o vencimento.',
+      'Multa de 2% após vencimento.',
+    ],
+  );
+
   @override
   void initState() {
     super.initState();
-    _printerService = PrinterService(adapter: NativeBluetoothAdapter());
+    _nativeAdapter = NativeBluetoothAdapter()
+      ..paperWidthDots = _paperWidthDots;
+    _printerService = PrinterService(adapter: _nativeAdapter);
     _log(
       'Dispositivo: ${widget.device.name} (${widget.device.id})',
       level: _LogLevel.info,
@@ -125,31 +155,34 @@ class _PrinterScreenState extends State<PrinterScreen> {
   Future<void> _printBoleto() async {
     if (_isBusy) return;
     setState(() => _isBusy = true);
-    _log('Montando payload do boleto...', level: _LogLevel.info);
+    _log('Gerando barcode ITF via ZXing...', level: _LogLevel.info);
 
-    // ✅ Assinatura real do BoletoData
-    final boleto = BoletoData(
-      beneficiario: 'ABACUS SOLUTIONS TECH LTDA',
-      pagador: 'USUÁRIO TESTE INTERFACE',
-      valor: 1250.50,
-      vencimento: DateTime(2025, 6, 30),
-      linhaDigitavel: '23793.38128 60033.062508 63000.063317 9 95020000125050',
-      codigoBarras: '23799950200001250503381260033062508630000633',  // 44 dígitos,
-      nossoNumero: '9 95020000125050',
-      instrucoes: [
-        'Não receber após o vencimento.',
-        'Multa de 2% após vencimento.',
-      ],
-    );
-
-    _log('Payload montado. Enviando via BLE (chunks de 120 bytes)...',
-        level: _LogLevel.info);
-
-    // ── Cronômetro de performance ────────────────────────────────
     final stopwatch = Stopwatch()..start();
 
     try {
-      final result = await _printerService.printBoleto(boleto, _boletoKey);
+      // ── 1) Gera barcode ITF via ZXing nativo ──────────────────────────────
+      final cleanBarcode = _boletoData.codigoBarras.replaceAll(RegExp(r'\D'), '');
+      final barcodePng = await _methodChannel.generateItfBarcode(
+        data: cleanBarcode,
+        widthPx: _paperWidthDots,
+        heightPx: _paperWidthDots == 576 ? 80 : 60,
+        margin: 10,
+      );
+      _log('✓ Barcode gerado (${barcodePng.length} bytes)', level: _LogLevel.debug);
+
+      // ── 2) Injeta no widget e aguarda rebuild ─────────────────────────────
+      setState(() => _barcodePng = barcodePng);
+
+      // Aguarda 2 frames reais do Flutter para garantir layout + paint
+      await WidgetsBinding.instance.endOfFrame;
+      await WidgetsBinding.instance.endOfFrame;
+
+      _log('Widget reconstruído com barcode. Capturando raster...',
+          level: _LogLevel.debug);
+
+      // ── 3) Captura + imprime via NativeBluetoothAdapter ───────────────────
+      final result = await _printerService.printBoleto(_boletoData, _boletoKey);
+
       stopwatch.stop();
       if (result.success) {
         _log(
@@ -158,9 +191,10 @@ class _PrinterScreenState extends State<PrinterScreen> {
         );
         _showSnackBar('Boleto impresso com sucesso!');
       } else {
-        stopwatch.stop();
-        _log('✗ Falha (${stopwatch.elapsed.inMilliseconds}ms): ${result.message}',
-            level: _LogLevel.error);
+        _log(
+          '✗ Falha (${stopwatch.elapsed.inMilliseconds}ms): ${result.message}',
+          level: _LogLevel.error,
+        );
         _showSnackBar(result.message ?? 'Falha na impressão.', isError: true);
       }
     } on PrinterNotConnectedException catch (e) {
@@ -173,7 +207,11 @@ class _PrinterScreenState extends State<PrinterScreen> {
       _log('✗ Erro inesperado: $e', level: _LogLevel.error);
       _showSnackBar('Erro ao imprimir boleto: $e', isError: true);
     } finally {
-      setState(() => _isBusy = false);
+      // Limpa o barcode do estado após impressão
+      setState(() {
+        _isBusy = false;
+        _barcodePng = null;
+      });
     }
   }
 
@@ -221,26 +259,25 @@ class _PrinterScreenState extends State<PrinterScreen> {
       ),
       body: Stack(
         children: [
+          // Widget do boleto fora da tela — reconstruído com barcode antes da captura
           Positioned(
-            left: -2000,
+            left: -4000,
             top: 0,
-            child: RepaintBoundary(
-              key: _boletoKey,
-              child: BoletoWidget(
-                data: BoletoData(
-                beneficiario: 'ABACUS SOLUTIONS TECH LTDA',
-                pagador: 'USUÁRIO TESTE INTERFACE',
-                valor: 1250.50,
-                vencimento: DateTime(2025, 6, 30),
-                linhaDigitavel: '23793.38128 60033.062508 63000.063317 9 95020000125050',
-                codigoBarras: '23799950200001250503381260033062508630000633',  // 44 dígitos,
-                nossoNumero: '9 95020000125050',
-                instrucoes: [
-                  'Não receber após o vencimento.',
-                  'Multa de 2% após vencimento.',
-                ],
-              ),
-                width: 384,
+            child: Material(
+              color: Colors.white,
+              child: SizedBox(
+                width: _paperWidthDots.toDouble(),
+                child: RepaintBoundary(
+                  key: _boletoKey,
+                  child: ColoredBox(
+                    color: Colors.white,
+                    child: BoletoWidget(
+                      data: _boletoData,
+                      paperWidthDots: _paperWidthDots,
+                      barcodeImageBytes: _barcodePng,
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -326,7 +363,7 @@ class _PrinterScreenState extends State<PrinterScreen> {
   }
 }
 
-// ── Sub-widgets ───────────────────────────────────────────────────────────────
+// ── Sub-widgets (sem alteração) ───────────────────────────────────────────────
 
 class _StatusCard extends StatelessWidget {
   const _StatusCard({
@@ -355,11 +392,7 @@ class _StatusCard extends StatelessWidget {
                 color: color,
                 shape: BoxShape.circle,
                 boxShadow: isConnected
-                    ? [
-                        BoxShadow(
-                            color: Colors.green.withOpacity(0.6),
-                            blurRadius: 8)
-                      ]
+                    ? [BoxShadow(color: Colors.green.withOpacity(0.6), blurRadius: 8)]
                     : null,
               ),
             ),
@@ -371,9 +404,7 @@ class _StatusCard extends StatelessWidget {
                   Text(
                     isConnected ? 'Conectado' : 'Desconectado',
                     style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: color,
-                        fontSize: 16),
+                        fontWeight: FontWeight.bold, color: color, fontSize: 16),
                   ),
                   Text(
                     deviceId,
@@ -444,8 +475,7 @@ class _ActionButton extends StatelessWidget {
       width: double.infinity,
       child: FilledButton.icon(
         style: FilledButton.styleFrom(
-          backgroundColor:
-              onPressed == null ? Colors.grey.shade800 : color,
+          backgroundColor: onPressed == null ? Colors.grey.shade800 : color,
           padding: const EdgeInsets.symmetric(vertical: 14),
         ),
         onPressed: onPressed,
@@ -456,7 +486,7 @@ class _ActionButton extends StatelessWidget {
   }
 }
 
-// ── Log Panel ─────────────────────────────────────────────────────────────────
+// ── Log Panel (sem alteração) ─────────────────────────────────────────────────
 
 enum _LogLevel { debug, info, success, error }
 
@@ -503,17 +533,13 @@ class _LogPanel extends StatelessWidget {
                 const SizedBox(width: 6),
                 const Text('LOGS',
                     style: TextStyle(
-                        color: Colors.grey,
-                        fontSize: 11,
-                        letterSpacing: 1.5)),
+                        color: Colors.grey, fontSize: 11, letterSpacing: 1.5)),
                 const Spacer(),
                 GestureDetector(
                   onTap: onClear,
                   child: const Text('LIMPAR',
                       style: TextStyle(
-                          color: Colors.grey,
-                          fontSize: 11,
-                          letterSpacing: 1.2)),
+                          color: Colors.grey, fontSize: 11, letterSpacing: 1.2)),
                 ),
               ],
             ),
@@ -523,13 +549,12 @@ class _LogPanel extends StatelessWidget {
             child: logs.isEmpty
                 ? const Center(
                     child: Text('Nenhum log ainda.',
-                        style:
-                            TextStyle(color: Colors.grey, fontSize: 12)),
+                        style: TextStyle(color: Colors.grey, fontSize: 12)),
                   )
                 : ListView.builder(
                     controller: scrollController,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                     itemCount: logs.length,
                     itemBuilder: (_, i) {
                       final e = logs[i];
@@ -542,13 +567,11 @@ class _LogPanel extends StatelessWidget {
                             children: [
                               TextSpan(
                                 text: '[${e.timestamp}] ',
-                                style:
-                                    const TextStyle(color: Colors.grey),
+                                style: const TextStyle(color: Colors.grey),
                               ),
                               TextSpan(
                                 text: e.message,
-                                style:
-                                    TextStyle(color: _colorFor(e.level)),
+                                style: TextStyle(color: _colorFor(e.level)),
                               ),
                             ],
                           ),

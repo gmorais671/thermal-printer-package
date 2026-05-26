@@ -78,6 +78,30 @@ class ThermalPrinterPkgPlugin : FlutterPlugin, MethodCallHandler {
                 
                 result.success(success)
             }
+
+            // ── NOVO: gera barcode ITF com ZXing, retorna PNG como ByteArray ──
+            "generateItfBarcode" -> {
+                val data = call.argument<String>("data")
+                if (data == null) { result.error("INVALID_ARGUMENT", "data é obrigatório", null); return }
+                val widthPx = call.argument<Int>("widthPx") ?: 576
+                val heightPx = call.argument<Int>("heightPx") ?: 100
+                val margin = call.argument<Int>("margin") ?: 10
+
+                val pngBytes = printerManager?.generateItfBarcode(data, widthPx, heightPx, margin)
+                if (pngBytes != null) {
+                    result.success(pngBytes)
+                } else {
+                    result.error("BARCODE_ERROR", "Falha ao gerar barcode ITF", null)
+                }
+            }
+
+            // ── NOVO: imprime PNG raster via POS_PrintPicture ──
+            "printRasterImage" -> {
+                val bytes = call.argument<ByteArray>("bytes")
+                if (bytes == null) { result.error("INVALID_ARGUMENT", "bytes é obrigatório", null); return }
+                val paperWidthDots = call.argument<Int>("paperWidthDots") ?: 576
+                result.success(printerManager?.printRasterImage(bytes, paperWidthDots) ?: false)
+            }
             
             "setAlign" -> {
                 val align = call.argument<Int>("align") ?: 0

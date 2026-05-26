@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:thermal_printer_pkg/src/abstraction/printer_adapter.dart';
 import 'package:thermal_printer_pkg/src/core/exceptions.dart';
@@ -96,13 +97,28 @@ class EscPosBluetoothAdapter implements PrinterAdapter {
   ) async {
     _assertConnected();
     try {
-      final image = await ImageRasterService.captureToImage(boletoWidgetKey);
-      if (image == null) {
+      // captureAndPrepare retorna PNG (Uint8List) já rotacionado e binarizado
+      final pngBytes = await ImageRasterService.captureAndPrepare(
+        boletoWidgetKey,
+        paperWidthDots: 384, // ESC/POS adapter assume 58mm por padrão
+        rotate90: true,
+      );
+      if (pngBytes == null) {
         return PrintResult.failure(
           message: 'Falha ao capturar imagem do boleto.',
           errorCode: 'RASTER_CAPTURE_ERROR',
         );
       }
+
+      // Decodifica PNG → img.Image para o EscPosBuilder
+      final image = img.decodeImage(pngBytes);
+      if (image == null) {
+        return PrintResult.failure(
+          message: 'Falha ao decodificar PNG do boleto.',
+          errorCode: 'RASTER_DECODE_ERROR',
+        );
+      }
+
       final bytes = await _builder.buildBoletoFromImageAndBarcode(
         image,
         boleto.codigoBarras,

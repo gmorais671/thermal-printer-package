@@ -1,49 +1,45 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:thermal_printer_pkg/src/abstraction/printer_adapter.dart';
 import 'package:thermal_printer_pkg/src/models/boleto_data.dart';
 import 'package:thermal_printer_pkg/src/models/print_result.dart';
 import 'package:thermal_printer_pkg/src/models/printer_device.dart';
+import 'package:thermal_printer_pkg/src/services/image_raster_service.dart';
 import 'package:thermal_printer_pkg/thermal_printer_pkg_method_channel.dart';
 
-/// Adapter que usa o SDK nativo (printerlibs.jar) via MethodChannel
 class NativeBluetoothAdapter implements PrinterAdapter {
   final _methodChannel = MethodChannelThermalPrinterPkg();
   PrinterDevice? _connectedDevice;
+
+  /// Largura da bobina em dots. Definida na conexão ou manualmente.
+  int paperWidthDots = 576; // padrão 80mm
 
   @override
   PrinterDevice? get connectedDevice => _connectedDevice;
 
   @override
+  bool get isConnected => _connectedDevice?.isConnected ?? false;
+
+  @override
   Stream<PrinterDevice> scan({Duration timeout = const Duration(seconds: 10)}) {
-    // ⚠️ O SDK nativo não expõe scan — você pode usar flutter_blue_plus para scan
-    // e depois conectar via NativeBluetoothAdapter.connect(device)
     throw UnimplementedError(
       'Scan deve ser feito via flutter_blue_plus. '
-      'Use NativeBluetoothAdapter.connect() com o endereço MAC do dispositivo.',
+      'Use NativeBluetoothAdapter.connect() com o endereço MAC.',
     );
   }
 
   @override
   Future<PrintResult> connect(PrinterDevice device) async {
     try {
-      // Tenta conectar via BLE usando o ID (endereço MAC)
-      final success = await _methodChannel.connectBLE(device.id);
-      
+      final success = await _methodChannel.connectBT(device.id);
       if (success) {
         _connectedDevice = device.copyWith(isConnected: true);
-        return PrintResult.success(message: 'Conectado via BLE: ${device.name}');
-      } else {
-        return PrintResult.failure(
-          message: 'Falha ao conectar via BLE',
-          errorCode: 'CONNECT_FAILED',
-        );
+        return PrintResult.success(message: 'Conectado: ${device.name}');
       }
+      return PrintResult.failure(message: 'Falha ao conectar', errorCode: 'CONNECT_FAILED');
     } catch (e) {
-      return PrintResult.failure(
-        message: e.toString(),
-        errorCode: 'CONNECT_ERROR',
-      );
+      return PrintResult.failure(message: e.toString(), errorCode: 'CONNECT_ERROR');
     }
   }
 
@@ -52,187 +48,120 @@ class NativeBluetoothAdapter implements PrinterAdapter {
     try {
       await _methodChannel.disconnect();
       _connectedDevice = _connectedDevice?.copyWith(isConnected: false);
-      return PrintResult.success(message: 'Desconectado com sucesso');
+      return PrintResult.success(message: 'Desconectado');
     } catch (e) {
-      return PrintResult.failure(
-        message: e.toString(),
-        errorCode: 'DISCONNECT_ERROR',
-      );
+      return PrintResult.failure(message: e.toString(), errorCode: 'DISCONNECT_ERROR');
     }
   }
 
   @override
   Future<PrintResult> printText(String text, {GlobalKey? boundaryKey}) async {
-    if (_connectedDevice == null) {
-      return PrintResult.failure(
-        message: 'Nenhum dispositivo conectado',
-        errorCode: 'NOT_CONNECTED',
-      );
-    }
-
+    if (!isConnected) return _notConnected();
     try {
       await _methodChannel.printText(text: text);
-      return PrintResult.success(message: 'Texto impresso com sucesso');
+      return PrintResult.success(message: 'Texto impresso');
     } catch (e) {
-      return PrintResult.failure(
-        message: e.toString(),
-        errorCode: 'PRINT_ERROR',
-      );
+      return PrintResult.failure(message: e.toString(), errorCode: 'PRINT_ERROR');
     }
   }
 
   @override
   Future<PrintResult> feedAndCut() async {
-    if (_connectedDevice == null) {
-      return PrintResult.failure(
-        message: 'Nenhum dispositivo conectado',
-        errorCode: 'NOT_CONNECTED',
-      );
-    }
-
+    if (!isConnected) return _notConnected();
     try {
-      // Avança 3 linhas e corta (se a impressora suportar)
       await _methodChannel.feedLine();
       await _methodChannel.feedLine();
       await _methodChannel.feedLine();
-      
-      // ⚠️ O SDK pode não ter comando de corte exposto
-      // Se necessário, adicione um método 'cut' no MethodChannel
-      
       return PrintResult.success(message: 'Feed executado');
     } catch (e) {
-      return PrintResult.failure(
-        message: e.toString(),
-        errorCode: 'FEED_ERROR',
-      );
+      return PrintResult.failure(message: e.toString(), errorCode: 'FEED_ERROR');
     }
   }
 
+  /// Fluxo principal: ZXing barcode → injeta no widget → captura raster → rotaciona → imprime.
   @override
   Future<PrintResult> printBoleto(BoletoData boleto, GlobalKey boundaryKey) async {
-    if (_connectedDevice == null) {
-      return PrintResult.failure(
-        message: 'Nenhum dispositivo conectado',
-        errorCode: 'NOT_CONNECTED',
-      );
-    }
+    if (!isConnected) return _notConnected();
 
     try {
-      // ── Cabeçalho ──
-      await _methodChannel.setAlign(1); // centro
-      await _methodChannel.printText(
-        text: 'BOLETO BANCÁRIO\n',
-        widthTimes: 1,
-        heightTimes: 1,
-        fontStyle: 0x08, // bold
-      );
-      await _methodChannel.feedLine();
-
-      // ── Beneficiário / Pagador ──
-      await _methodChannel.setAlign(0); // esquerda
-      await _methodChannel.printText(
-        text: 'Beneficiário:\n',
-        fontStyle: 0x08,
-      );
-      await _methodChannel.printText(text: '${boleto.beneficiario}\n');
-      await _methodChannel.printText(
-        text: 'Pagador:\n',
-        fontStyle: 0x08,
-      );
-      await _methodChannel.printText(text: '${boleto.pagador}\n');
-      await _methodChannel.feedLine();
-
-      // ── Valor e Vencimento ──
-      final valorFormatado = 'R\$ ${boleto.valor.toStringAsFixed(2)}';
-      final vencimentoFormatado =
-          '${boleto.vencimento.day.toString().padLeft(2, '0')}/'
-          '${boleto.vencimento.month.toString().padLeft(2, '0')}/'
-          '${boleto.vencimento.year}';
-
-      await _methodChannel.printText(
-        text: 'Valor: $valorFormatado\n',
-        fontStyle: 0x08,
-      );
-      await _methodChannel.printText(
-        text: 'Vencimento: $vencimentoFormatado\n',
-        fontStyle: 0x08,
-      );
-      await _methodChannel.feedLine();
-
-      // ── Nosso Número ──
-      await _methodChannel.printText(
-        text: 'Nosso Número:\n',
-        fontStyle: 0x08,
-      );
-      await _methodChannel.printText(text: '${boleto.nossoNumero}\n');
-
-      // ── Instruções ──
-      if (boleto.instrucoes != null && boleto.instrucoes!.isNotEmpty) {
-        await _methodChannel.feedLine();
-        await _methodChannel.printText(
-          text: 'Instruções:\n',
-          fontStyle: 0x08,
-        );
-        for (final instrucao in boleto.instrucoes!) {
-          await _methodChannel.printText(text: '- $instrucao\n');
-        }
-      }
-
-      await _methodChannel.feedLine();
-
-      // ── Linha Digitável ──
-      await _methodChannel.setAlign(1); // centro
-      await _methodChannel.printText(
-        text: 'Linha Digitável:\n',
-        fontStyle: 0x08,
-      );
-      final linhaDigitavel = boleto.linhaDigitavel;
-      final parte1 = linhaDigitavel.substring(0, 23); // "23793.36128 60033.06250"
-      final parte2 = linhaDigitavel.substring(24);     // "8 63000.0 63317 9 95020000125050"
-      
-      await _methodChannel.printText(text: '$parte1\n');
-      await _methodChannel.printText(text: '$parte2\n');
-      await _methodChannel.feedLine();
-
-      // ── Código de Barras (ITF nativo) ──
-      final cleanedBarcode = boleto.codigoBarras.replaceAll(RegExp(r'\D'), '');
-      
-      if (cleanedBarcode.length == 44) {
-        await _methodChannel.printBarcode(
-          data: cleanedBarcode,
-          type: 0x46, // ITF
-          width: 3,
-          height: 96,
-          fontPosition: 0, // sem texto HRI (já temos a linha digitável)
-        );
-      } else {
+      final cleanBarcode = boleto.codigoBarras.replaceAll(RegExp(r'\D'), '');
+      if (cleanBarcode.length != 44) {
         return PrintResult.failure(
-          message: 'Código de barras inválido: deve ter 44 dígitos, recebido ${cleanedBarcode.length}',
+          message: 'Código de barras inválido: ${cleanBarcode.length} dígitos',
           errorCode: 'INVALID_BARCODE',
         );
       }
 
-      await _methodChannel.feedLine();
-      await _methodChannel.feedLine();
+      // ── 1) Gera barcode ITF via ZXing nativo ──────────────────────────────
+      // Largura = paperWidthDots (o barcode vai ocupar toda a largura do boleto)
+      // Altura = 80 dots (ajuste conforme necessário)
+      final barcodePng = await _methodChannel.generateItfBarcode(
+        data: cleanBarcode,
+        widthPx: paperWidthDots,
+        heightPx: 80,
+        margin: 10,
+      );
+
+      // ── 2) Injeta o barcode no widget via callback ─────────────────────────
+      // O widget precisa ser reconstruído com barcodeImageBytes.
+      // Isso é feito pelo app host — o adapter sinaliza via resultado intermediário.
+      // Por ora, o boundaryKey já deve apontar para o widget com barcode injetado.
+      // (ver nota abaixo sobre StatefulWidget)
+
+      // ── 3) Captura o widget como raster PNG ───────────────────────────────
+      final pngBytes = await ImageRasterService.captureAndPrepare(
+        boundaryKey,
+        paperWidthDots: paperWidthDots,
+        rotate90: true,
+      );
+
+      if (pngBytes == null) {
+        return PrintResult.failure(
+          message: 'Falha ao capturar raster do boleto',
+          errorCode: 'RASTER_ERROR',
+        );
+      }
+
+      // ── 4) Imprime via POS_PrintPicture ───────────────────────────────────
+      final success = await _methodChannel.printRasterImage(
+        bytes: pngBytes,
+        paperWidthDots: paperWidthDots,
+      );
+
+      if (!success) {
+        return PrintResult.failure(
+          message: 'Falha ao imprimir raster',
+          errorCode: 'PRINT_RASTER_ERROR',
+        );
+      }
+
+      // Feed + corte
+      await feedAndCut();
 
       return PrintResult.success(message: 'Boleto impresso com sucesso');
     } catch (e) {
-      return PrintResult.failure(
-        message: e.toString(),
-        errorCode: 'PRINT_ERROR',
-      );
+      return PrintResult.failure(message: e.toString(), errorCode: 'PRINT_ERROR');
     }
   }
 
   @override
   Future<PrintResult> printRawBytes(Uint8List bytes) async {
-    // O SDK nativo não expõe envio de bytes brutos diretamente
-    return PrintResult.failure(
-      message: 'printRawBytes não suportado pelo adapter nativo. Use printBoleto().',
-      errorCode: 'NOT_SUPPORTED',
-    );
+    if (!isConnected) return _notConnected();
+    try {
+      final success = await _methodChannel.printRasterImage(
+        bytes: bytes,
+        paperWidthDots: paperWidthDots,
+      );
+      return success
+          ? PrintResult.success(message: 'Bytes impressos')
+          : PrintResult.failure(message: 'Falha ao imprimir bytes', errorCode: 'PRINT_ERROR');
+    } catch (e) {
+      return PrintResult.failure(message: e.toString(), errorCode: 'PRINT_ERROR');
+    }
   }
 
-  @override
-  bool get isConnected => _connectedDevice?.isConnected ?? false;
+  PrintResult _notConnected() => PrintResult.failure(
+        message: 'Nenhum dispositivo conectado',
+        errorCode: 'NOT_CONNECTED',
+      );
 }
