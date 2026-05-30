@@ -1,8 +1,10 @@
+// lib/example/printer_screen.dart
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:thermal_printer_pkg/thermal_printer_pkg.dart';
-import 'package:thermal_printer_pkg/thermal_printer_pkg_method_channel.dart';
+import 'package:thermal_printer_pkg/thermal_printer_pkg.dart'; // barrel export do package
+import 'preview_page.dart'; // preview na mesma pasta example
+import 'package:thermal_printer_pkg/thermal_printer_pkg_method_channel.dart'; // method channel helper (ZXing)
 
 class PrinterScreen extends StatefulWidget {
   const PrinterScreen({super.key, required this.device});
@@ -32,7 +34,7 @@ class _PrinterScreenState extends State<PrinterScreen> {
   /// 384 = 58mm | 576 = 80mm
   static const int _paperWidthDots = 384;
 
-  // Dados do boleto de teste — centralizados para não duplicar
+  // Dados do boleto — única fonte de verdade nesta tela.
   static final BoletoData _boletoData = BoletoData(
     beneficiario: 'ABACUS SOLUTIONS TECH LTDA',
     pagador: 'USUÁRIO TESTE INTERFACE',
@@ -50,13 +52,9 @@ class _PrinterScreenState extends State<PrinterScreen> {
   @override
   void initState() {
     super.initState();
-    _nativeAdapter = NativeBluetoothAdapter()
-      ..paperWidthDots = _paperWidthDots;
+    _nativeAdapter = NativeBluetoothAdapter()..paperWidthDots = _paperWidthDots;
     _printerService = PrinterService(adapter: _nativeAdapter);
-    _log(
-      'Dispositivo: ${widget.device.name} (${widget.device.id})',
-      level: _LogLevel.info,
-    );
+    _log('Dispositivo: ${widget.device.name} (${widget.device.id})', level: _LogLevel.info);
   }
 
   @override
@@ -71,8 +69,7 @@ class _PrinterScreenState extends State<PrinterScreen> {
   void _log(String message, {_LogLevel level = _LogLevel.debug}) {
     if (!mounted) return;
     final now = TimeOfDay.now();
-    final ts =
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final ts = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
     setState(() => _logs.add(_LogEntry(ts, message, level)));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_logScrollController.hasClients) {
@@ -85,7 +82,7 @@ class _PrinterScreenState extends State<PrinterScreen> {
     });
   }
 
-  // ── Ações ─────────────────────────────────────────────────────────────────
+  // ── Ações de conexão / impressão ─────────────────────────────────────────
 
   Future<void> _connect() async {
     if (_isBusy) return;
@@ -159,42 +156,39 @@ class _PrinterScreenState extends State<PrinterScreen> {
 
     final stopwatch = Stopwatch()..start();
 
+    final padding = _paperWidthDots == 576 ? 10 : 6;
+    final contentWidthPx = _paperWidthDots - 2 * padding;
+
     try {
       // ── 1) Gera barcode ITF via ZXing nativo ──────────────────────────────
       final cleanBarcode = _boletoData.codigoBarras.replaceAll(RegExp(r'\D'), '');
       final barcodePng = await _methodChannel.generateItfBarcode(
         data: cleanBarcode,
-        widthPx: _paperWidthDots,
+        widthPx: contentWidthPx,
         heightPx: _paperWidthDots == 576 ? 80 : 60,
         margin: 10,
       );
       _log('✓ Barcode gerado (${barcodePng.length} bytes)', level: _LogLevel.debug);
 
-      // ── 2) Injeta no widget e aguarda rebuild ─────────────────────────────
+      // ── 2) Injeta no widget offscreen e aguarda rebuild/paint ─────────────
       setState(() => _barcodePng = barcodePng);
 
-      // Aguarda 2 frames reais do Flutter para garantir layout + paint
+      // Aguarda frames para garantir paint do RepaintBoundary offscreen
       await WidgetsBinding.instance.endOfFrame;
       await WidgetsBinding.instance.endOfFrame;
 
-      _log('Widget reconstruído com barcode. Capturando raster...',
-          level: _LogLevel.debug);
+      _log('Widget reconstruído com barcode. Capturando raster e imprimindo...', level: _LogLevel.debug);
 
-      // ── 3) Captura + imprime via NativeBluetoothAdapter ───────────────────
+      // ── 3) Captura + imprime via PrinterService (implementação do projeto)
+      //    Espera-se que printBoleto faça capture (usando key), conversão e envio.
       final result = await _printerService.printBoleto(_boletoData, _boletoKey);
 
       stopwatch.stop();
       if (result.success) {
-        _log(
-          '✓ Boleto impresso em ${stopwatch.elapsed.inMilliseconds}ms',
-          level: _LogLevel.success,
-        );
+        _log('✓ Boleto impresso em ${stopwatch.elapsed.inMilliseconds}ms', level: _LogLevel.success);
         _showSnackBar('Boleto impresso com sucesso!');
       } else {
-        _log(
-          '✗ Falha (${stopwatch.elapsed.inMilliseconds}ms): ${result.message}',
-          level: _LogLevel.error,
-        );
+        _log('✗ Falha (${stopwatch.elapsed.inMilliseconds}ms): ${result.message}', level: _LogLevel.error);
         _showSnackBar(result.message ?? 'Falha na impressão.', isError: true);
       }
     } on PrinterNotConnectedException catch (e) {
@@ -207,7 +201,7 @@ class _PrinterScreenState extends State<PrinterScreen> {
       _log('✗ Erro inesperado: $e', level: _LogLevel.error);
       _showSnackBar('Erro ao imprimir boleto: $e', isError: true);
     } finally {
-      // Limpa o barcode do estado após impressão
+      // Limpa o barcode do estado após tentativa de impressão
       setState(() {
         _isBusy = false;
         _barcodePng = null;
@@ -235,13 +229,25 @@ class _PrinterScreenState extends State<PrinterScreen> {
     }
   }
 
+  // Abre a tela de preview passando o mesmo BoletoData e o barcode (se gerado)
+  void _openPreview() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => BoletoPreviewPage(
+          data: _boletoData,
+          barcodeImageBytes: _barcodePng,
+          initialPaperWidthDots: _paperWidthDots,
+        ),
+      ),
+    );
+  }
+
   void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor:
-            isError ? Colors.red.shade700 : Colors.green.shade700,
+        backgroundColor: isError ? Colors.red.shade700 : Colors.green.shade700,
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -253,13 +259,13 @@ class _PrinterScreenState extends State<PrinterScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-            widget.device.name.isNotEmpty ? widget.device.name : 'Impressora'),
+        title: Text(widget.device.name.isNotEmpty ? widget.device.name : 'Impressora'),
         centerTitle: true,
       ),
       body: Stack(
         children: [
-          // Widget do boleto fora da tela — reconstruído com barcode antes da captura
+          // Widget do boleto offscreen — reconstruído com barcode antes da captura.
+          // Isso permite capturar sem depender da PreviewPage visível.
           Positioned(
             left: -4000,
             top: 0,
@@ -281,13 +287,12 @@ class _PrinterScreenState extends State<PrinterScreen> {
               ),
             ),
           ),
+
           Column(
             children: [
               AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
-                child: _isBusy
-                    ? const LinearProgressIndicator(key: ValueKey('busy'))
-                    : const SizedBox(height: 4, key: ValueKey('idle')),
+                child: _isBusy ? const LinearProgressIndicator(key: ValueKey('busy')) : const SizedBox(height: 4, key: ValueKey('idle')),
               ),
               Expanded(
                 child: SingleChildScrollView(
@@ -295,24 +300,16 @@ class _PrinterScreenState extends State<PrinterScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _StatusCard(
-                        isConnected: _isConnected,
-                        deviceId: widget.device.id,
-                        deviceName: widget.device.name,
-                      ),
+                      _StatusCard(isConnected: _isConnected, deviceId: widget.device.id, deviceName: widget.device.name),
                       const SizedBox(height: 16),
                       _ActionCard(
                         title: 'CONEXÃO',
                         children: [
                           _ActionButton(
                             label: _isConnected ? 'Desconectar' : 'Conectar',
-                            icon: _isConnected
-                                ? Icons.bluetooth_disabled
-                                : Icons.bluetooth_connected,
+                            icon: _isConnected ? Icons.bluetooth_disabled : Icons.bluetooth_connected,
                             color: _isConnected ? Colors.red : Colors.blue,
-                            onPressed: _isBusy
-                                ? null
-                                : (_isConnected ? _disconnect : _connect),
+                            onPressed: _isBusy ? null : (_isConnected ? _disconnect : _connect),
                           ),
                         ],
                       ),
@@ -324,25 +321,28 @@ class _PrinterScreenState extends State<PrinterScreen> {
                             label: 'Imprimir Texto Simples',
                             icon: Icons.text_fields,
                             color: Colors.teal,
-                            onPressed: (_isBusy || !_isConnected)
-                                ? null
-                                : _printSimpleText,
+                            onPressed: (_isBusy || !_isConnected) ? null : _printSimpleText,
+                          ),
+                          const SizedBox(height: 8),
+                          _ActionButton(
+                            label: 'Preview do Boleto',
+                            icon: Icons.visibility,
+                            color: Colors.indigo,
+                            onPressed: _isBusy ? null : _openPreview,
                           ),
                           const SizedBox(height: 8),
                           _ActionButton(
                             label: 'Imprimir Boleto Teste',
                             icon: Icons.receipt_long,
                             color: Colors.orange,
-                            onPressed:
-                                (_isBusy || !_isConnected) ? null : _printBoleto,
+                            onPressed: (_isBusy || !_isConnected) ? null : _printBoleto,
                           ),
                           const SizedBox(height: 8),
                           _ActionButton(
                             label: 'Avançar Papel e Cortar',
                             icon: Icons.content_cut,
                             color: Colors.purple,
-                            onPressed:
-                                (_isBusy || !_isConnected) ? null : _feedAndCut,
+                            onPressed: (_isBusy || !_isConnected) ? null : _feedAndCut,
                           ),
                         ],
                       ),
@@ -350,11 +350,7 @@ class _PrinterScreenState extends State<PrinterScreen> {
                   ),
                 ),
               ),
-              _LogPanel(
-                logs: _logs,
-                scrollController: _logScrollController,
-                onClear: () => setState(() => _logs.clear()),
-              ),
+              _LogPanel(logs: _logs, scrollController: _logScrollController, onClear: () => setState(() => _logs.clear())),
             ],
           ),
         ],
@@ -363,7 +359,7 @@ class _PrinterScreenState extends State<PrinterScreen> {
   }
 }
 
-// ── Sub-widgets (sem alteração) ───────────────────────────────────────────────
+// ── Sub-widgets (incorporados para arquivo self-contained) ───────────────
 
 class _StatusCard extends StatelessWidget {
   const _StatusCard({
@@ -391,9 +387,7 @@ class _StatusCard extends StatelessWidget {
               decoration: BoxDecoration(
                 color: color,
                 shape: BoxShape.circle,
-                boxShadow: isConnected
-                    ? [BoxShadow(color: Colors.green.withOpacity(0.6), blurRadius: 8)]
-                    : null,
+                boxShadow: isConnected ? [BoxShadow(color: Colors.green.withOpacity(0.6), blurRadius: 8)] : null,
               ),
             ),
             const SizedBox(width: 12),
@@ -403,15 +397,11 @@ class _StatusCard extends StatelessWidget {
                 children: [
                   Text(
                     isConnected ? 'Conectado' : 'Desconectado',
-                    style: TextStyle(
-                        fontWeight: FontWeight.bold, color: color, fontSize: 16),
+                    style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 16),
                   ),
                   Text(
                     deviceId,
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(fontFamily: 'monospace'),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
                   ),
                 ],
               ),
@@ -442,11 +432,7 @@ class _ActionCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(title,
-                style: Theme.of(context)
-                    .textTheme
-                    .titleSmall
-                    ?.copyWith(color: Colors.grey, letterSpacing: 1.2)),
+            Text(title, style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Colors.grey, letterSpacing: 1.2)),
             const SizedBox(height: 12),
             ...children,
           ],
@@ -486,7 +472,7 @@ class _ActionButton extends StatelessWidget {
   }
 }
 
-// ── Log Panel (sem alteração) ─────────────────────────────────────────────────
+// ── Log Panel & helpers ───────────────────────────────────────────────────
 
 enum _LogLevel { debug, info, success, error }
 
@@ -519,10 +505,7 @@ class _LogPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 200,
-      decoration: BoxDecoration(
-        color: const Color(0xFF0D0D0D),
-        border: Border(top: BorderSide(color: Colors.grey.shade800)),
-      ),
+      decoration: BoxDecoration(color: const Color(0xFF0D0D0D), border: Border(top: BorderSide(color: Colors.grey.shade800))),
       child: Column(
         children: [
           Padding(
@@ -531,15 +514,11 @@ class _LogPanel extends StatelessWidget {
               children: [
                 const Icon(Icons.terminal, size: 14, color: Colors.grey),
                 const SizedBox(width: 6),
-                const Text('LOGS',
-                    style: TextStyle(
-                        color: Colors.grey, fontSize: 11, letterSpacing: 1.5)),
+                const Text('LOGS', style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1.5)),
                 const Spacer(),
                 GestureDetector(
                   onTap: onClear,
-                  child: const Text('LIMPAR',
-                      style: TextStyle(
-                          color: Colors.grey, fontSize: 11, letterSpacing: 1.2)),
+                  child: const Text('LIMPAR', style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1.2)),
                 ),
               ],
             ),
@@ -547,14 +526,10 @@ class _LogPanel extends StatelessWidget {
           const Divider(height: 1, color: Color(0xFF1A1A1A)),
           Expanded(
             child: logs.isEmpty
-                ? const Center(
-                    child: Text('Nenhum log ainda.',
-                        style: TextStyle(color: Colors.grey, fontSize: 12)),
-                  )
+                ? const Center(child: Text('Nenhum log ainda.', style: TextStyle(color: Colors.grey, fontSize: 12)))
                 : ListView.builder(
                     controller: scrollController,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                     itemCount: logs.length,
                     itemBuilder: (_, i) {
                       final e = logs[i];
@@ -562,17 +537,10 @@ class _LogPanel extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(vertical: 1),
                         child: RichText(
                           text: TextSpan(
-                            style: const TextStyle(
-                                fontFamily: 'monospace', fontSize: 11),
+                            style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
                             children: [
-                              TextSpan(
-                                text: '[${e.timestamp}] ',
-                                style: const TextStyle(color: Colors.grey),
-                              ),
-                              TextSpan(
-                                text: e.message,
-                                style: TextStyle(color: _colorFor(e.level)),
-                              ),
+                              TextSpan(text: '[${e.timestamp}] ', style: const TextStyle(color: Colors.grey)),
+                              TextSpan(text: e.message, style: TextStyle(color: _colorFor(e.level))),
                             ],
                           ),
                         ),

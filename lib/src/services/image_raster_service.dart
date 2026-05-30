@@ -16,6 +16,7 @@ class ImageRasterService {
     GlobalKey key, {
     int paperWidthDots = 576,
     bool rotate90 = true,
+    double pixelRatio = 1.0,
   }) async {
     try {
       await Future.delayed(const Duration(milliseconds: 300));
@@ -33,7 +34,7 @@ class ImageRasterService {
 
       // O widget foi desenhado com height = paperWidthDots (landscape).
       // Capturamos com pixelRatio = 1.0 — o widget já tem as dimensões certas em dots.
-      final uiImage = await boundary.toImage(pixelRatio: 1.0);
+      final uiImage = await boundary.toImage(pixelRatio: pixelRatio);
       final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.rawRgba);
       if (byteData == null) return null;
 

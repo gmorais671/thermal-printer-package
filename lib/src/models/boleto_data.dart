@@ -1,58 +1,61 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 part 'boleto_data.freezed.dart';
-part 'boleto_data.g.dart';
 
 /// Dados necessários para impressão de um boleto bancário.
+/// Observação: todos os campos são opcionais (nullable) exceto `codigoBarras`.
 @freezed
 class BoletoData with _$BoletoData {
   const factory BoletoData({
-    /// Nome ou razão social do beneficiário (cedente).
-    required String beneficiario,
+    // Cabeçalho / banco
+    String? nomeBanco,
+    String? numeroDigitoBanco, // ex: "001-9" (ou separação de número + dígito)
 
-    /// Nome ou razão social do pagador (sacado).
-    required String pagador,
+    // Identificadores / linhas
+    String? numeroBoleto, // linha digitável (47/48 dígitos) — legado/alias
+    String? linhaDigitavel, // alternativa/alias para linha digitável
+    required String codigoBarras, // 44 dígitos do código de barras (obrigatório)
 
-    /// Valor do boleto em reais.
-    required double valor,
+    // Local e beneficiário
+    String? localPgto,
+    String? beneficiario,
+    String? nomeEnderecoBeneficiario,
 
-    /// Data de vencimento do boleto.
-    required DateTime vencimento,
+    // Documento
+    DateTime? docData, // data do documento (emissão)
+    DateTime? vencimento, // data de vencimento explícita (adicionada)
+    String? docNumero,
+    String? docEspecie,
+    bool? aceite, // true -> aceite, false -> não aceite
 
-    /// Linha digitável completa (47 ou 48 dígitos).
-    required String linhaDigitavel,
+    // Processamento / uso do banco
+    DateTime? processamentoData,
+    String? usoDoBanco,
+    String? agenciaCodigoBeneficiario,
+    String? nossoNumero,
 
-    /// 44 dígitos do código de barras.
-    required String codigoBarras,
+    // Carteira / espécie / quantidade
+    String? carteira,
+    String? especie,
+    int? quantidade,
 
-    /// Nosso número — identificador do boleto no banco.
-    required String nossoNumero,
+    // Valores
+    double? valor,
+    double? docValor,
+    double? descontoAbatimento,
+    double? outrasDeducoes,
+    double? jurosMulta,
+    double? outrosAcrescimos,
+    double? valorCobrado,
 
-    /// Instruções adicionais ao caixa/pagador (ex: multa, desconto).
+    // Instruções / texto livre
     List<String>? instrucoes,
 
-    /// Nome ou código do banco emissor (ex: "BANCO DO BRASIL", "237").
-    String? banco,
+    // Pagador / avalista
+    String? pagador,
+    String? pagadorAvalista,
 
-    /// Agência do beneficiário (ex: "1234-5").
-    String? agencia,
-
-    /// Conta do beneficiário (ex: "00012345-6").
-    String? conta,
-
-    /// Data de emissão do documento.
-    DateTime? dataDocumento,
-
-    /// Número do documento (identificador interno).
-    String? numeroDocumento,
-
-    /// Espécie do documento (ex: "DM", "NF").
-    String? especie,
-
-    /// Aceite (ex: "N" ou "S").
-    String? aceite,
+    // Outros
+    String? codigoBaixa,
   }) = _BoletoData;
-
-  factory BoletoData.fromJson(Map<String, dynamic> json) =>
-      _$BoletoDataFromJson(json);
 }

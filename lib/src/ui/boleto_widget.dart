@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import '../../thermal_printer_pkg.dart';
+import 'package:thermal_printer_pkg/src/models/boleto_data.dart';
 
 /// Widget do boleto em modo LANDSCAPE.
 /// [paperWidthDots] define a altura do canvas (= largura da bobina em dots).
@@ -21,21 +21,61 @@ class BoletoWidget extends StatelessWidget {
   /// PNG do barcode gerado via ZXing. Se null, exibe placeholder.
   final Uint8List? barcodeImageBytes;
 
-  double get _height => paperWidthDots.toDouble();
-  double get _fontSize => paperWidthDots == 576 ? 11.0 : 9.0;
-  double get _fontSizeSm => paperWidthDots == 576 ? 9.5 : 8.0;
-  double get _padding => paperWidthDots == 576 ? 10.0 : 6.0;
+  // Base de dimensionamento (defina aqui o "projeto" para 58mm)
+  static const double _baseWidth = 384.0;
+  static const double _baseHeight = 300.0; // ajuste para deixar boleto mais/menos alto
 
-  String get _vencimento =>
-      '${data.vencimento.day.toString().padLeft(2, '0')}/'
-      '${data.vencimento.month.toString().padLeft(2, '0')}/'
-      '${data.vencimento.year}';
+  double get _barcodeHeight => paperWidthDots == 576 ? 56.0 : 46.0;
 
-  String get _dataDoc => data.dataDocumento != null
-      ? '${data.dataDocumento!.day.toString().padLeft(2, '0')}/'
-        '${data.dataDocumento!.month.toString().padLeft(2, '0')}/'
-        '${data.dataDocumento!.year}'
-      : '';
+  /// Altura do widget em logical pixels — escalada proporcionalmente à largura.
+  double get _height =>
+      (paperWidthDots * (_baseHeight / _baseWidth)).roundToDouble();
+
+  /// Font sizes proporcionais (escala com a largura)
+  double get _fontSize => (paperWidthDots * (11.0 / 576.0)).clamp(8.0, 20.0);
+  double get _fontSizeSm => (paperWidthDots * (9.0 / 576.0)).clamp(7.0, 18.0);
+  double get _fontSizeXs => (paperWidthDots * (7.0 / 576.0)).clamp(6.0, 14.0);
+
+  /// Padding proporcional
+  double get _padding => (paperWidthDots * (8.0 / 576.0)).clamp(4.0, 20.0);
+
+  // Vencimento: usa docData como principal, fallback para processamentoData
+  String get _vencimento {
+    final date = data.vencimento ?? data.docData ?? data.processamentoData;
+    if (date == null) return '';
+    return '${date.day.toString().padLeft(2, '0')}/'
+        '${date.month.toString().padLeft(2, '0')}/'
+        '${date.year}';
+  }
+
+  String get _dataDoc {
+    final date = data.docData;
+    if (date == null) return '';
+    return '${date.day.toString().padLeft(2, '0')}/'
+        '${date.month.toString().padLeft(2, '0')}/'
+        '${date.year}';
+  }
+
+  String _formatCurrency(double? v) {
+    if (v == null) return '';
+    return 'R\$ ${v.toStringAsFixed(2)}';
+  }
+
+  String get _linhaDigitavel => (data.linhaDigitavel ?? data.numeroBoleto ?? '').trim();
+
+  String get _bankName => (data.nomeBanco ?? '').trim().isNotEmpty
+      ? data.nomeBanco!.trim()
+      : 'BOLETO BANCÁRIO';
+
+  String get _bankCodeBox => (data.numeroDigitoBanco ?? '').trim();
+
+  String _aceiteText() {
+    final ace = data.aceite;
+    if (ace == null) return '';
+    if (ace is bool) return ace ? 'A' : 'N';
+    // se por acaso for String em runtime
+    return ace.toString();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -48,13 +88,13 @@ class BoletoWidget extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildHeader(),
-          _buildDivider(),
+          SizedBox(height: _padding / 2),
           _buildMainGrid(),
-          _buildDivider(),
+          SizedBox(height: _padding / 2),
           _buildInstrucoesRow(),
-          _buildDivider(),
+          SizedBox(height: _padding / 2),
           _buildPagadorRow(),
-          _buildDivider(),
+          SizedBox(height: _padding / 2),
           _buildBarcode(),
         ],
       ),
@@ -65,51 +105,60 @@ class BoletoWidget extends StatelessWidget {
   Widget _buildHeader() {
     return IntrinsicHeight(
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // Banco
+          // Banco (esquerda grande)
           Expanded(
-            flex: 3,
+            flex: 6,
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: _padding / 2),
               child: Text(
-                data.banco ?? 'BOLETO BANCÁRIO',
+                _bankName,
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  fontSize: _fontSize + 2,
+                  fontSize: _fontSize + 4,
                   color: Colors.black,
                 ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ),
-          _buildVerticalDivider(),
-          // Código do banco
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: _padding / 2),
-            child: Center(
+
+          // Caixa do código do banco (pequena)
+          if (_bankCodeBox.isNotEmpty)
+            Container(
+              margin: EdgeInsets.symmetric(horizontal: _padding / 2),
+              padding: EdgeInsets.symmetric(horizontal: 6.0, vertical: 4.0),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.black, width: 1),
+              ),
               child: Text(
-                data.agencia ?? '',
+                _bankCodeBox,
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
                   fontSize: _fontSize + 2,
-                  color: Colors.black,
                 ),
               ),
-            ),
-          ),
-          _buildVerticalDivider(),
-          // Linha digitável
+            )
+          else
+            SizedBox(width: _padding),
+
+          // Linha digitável (direita grande)
           Expanded(
-            flex: 7,
+            flex: 9,
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: _padding / 2),
               child: Text(
-                data.linhaDigitavel,
+                _linhaDigitavel,
+                textAlign: TextAlign.right,
                 style: TextStyle(
-                  fontSize: _fontSize,
+                  fontSize: _fontSize + 2,
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
                 ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ),
@@ -120,90 +169,117 @@ class BoletoWidget extends StatelessWidget {
 
   // ── Grid principal de campos ─────────────────────────────────────────────
   Widget _buildMainGrid() {
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Coluna esquerda (maior)
-          Expanded(
-            flex: 7,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildField('Local de Pagamento', 'PAGÁVEL EM QUALQUER BANCO ATÉ O VENCIMENTO'),
-                _buildDivider(),
-                _buildField('Beneficiário', data.beneficiario),
-                _buildDivider(),
-                IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(child: _buildField('Data do Documento', _dataDoc)),
-                      _buildVerticalDivider(),
-                      Expanded(child: _buildField('Nº do Documento', data.numeroDocumento ?? '')),
-                      _buildVerticalDivider(),
-                      Expanded(child: _buildField('Espécie Doc.', data.especie ?? '')),
-                      _buildVerticalDivider(),
-                      Expanded(child: _buildField('Aceite', data.aceite ?? '')),
-                      _buildVerticalDivider(),
-                      Expanded(child: _buildField('Data Processamento', _vencimento)),
-                      _buildVerticalDivider(),
-                      Expanded(child: _buildField('Nosso Número', data.nossoNumero)),
-                    ],
+    final sideColumnWidth = (paperWidthDots * (120.0 / 576.0)).roundToDouble();
+
+    return Expanded(
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Coluna esquerda (maior)
+            Expanded(
+              flex: 7,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildField(
+                    'Local de Pagamento',
+                    data.localPgto ?? 'PAGÁVEL EM QUALQUER BANCO ATÉ O VENCIMENTO',
+                    boldValue: true,
                   ),
-                ),
-                _buildDivider(),
-                IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(child: _buildField('Uso do Banco', '')),
-                      _buildVerticalDivider(),
-                      Expanded(child: _buildField('Carteira', '')),
-                      _buildVerticalDivider(),
-                      Expanded(child: _buildField('Espécie', 'R\$')),
-                      _buildVerticalDivider(),
-                      Expanded(child: _buildField('Quantidade', '')),
-                      _buildVerticalDivider(),
-                      Expanded(flex: 2, child: _buildField('Valor', '')),
-                      _buildVerticalDivider(),
-                      Expanded(
-                        flex: 2,
-                        child: _buildField(
-                          'Valor do Documento',
-                          'R\$ ${data.valor.toStringAsFixed(2)}',
-                        ),
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+                  _buildField('Beneficiário', data.beneficiario),
+                  if ((data.nomeEnderecoBeneficiario ?? '').isNotEmpty)
+                    Padding(
+                      padding: EdgeInsets.only(left: _padding / 2, top: 2),
+                      child: Text(
+                        data.nomeEnderecoBeneficiario!,
+                        style: TextStyle(fontSize: _fontSizeXs, color: Colors.black),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ],
+                    ),
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+
+                  // Linha de campos (data doc / nº doc / espécie / aceite / proc. data / nosso nº)
+                  Padding(
+                    padding: EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        Expanded(child: _buildFieldInline('Data do Documento', _dataDoc)),
+                        _verticalSep(),
+                        Expanded(child: _buildFieldInline('Nº do Documento', data.docNumero)),
+                        _verticalSep(),
+                        Expanded(child: _buildFieldInline('Espécie', data.docEspecie)),
+                        _verticalSep(),
+                        Expanded(child: _buildFieldInline('Aceite', _aceiteText())),
+                        _verticalSep(),
+                        Expanded(child: _buildFieldInline('Data Process.', _vencimento)),
+                        _verticalSep(),
+                        Expanded(child: _buildFieldInline('Nosso Nº', data.nossoNumero)),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+
+                  // Linha de valores: uso do banco / carteira / espécie / quantidade / valor / valor do doc
+                  Padding(
+                    padding: EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(child: _buildFieldInline('Uso do Banco', data.usoDoBanco)),
+                        _verticalSep(),
+                        Expanded(child: _buildFieldInline('Carteira', data.carteira)),
+                        _verticalSep(),
+                        Expanded(child: _buildFieldInline('Espécie', data.especie)),
+                        _verticalSep(),
+                        Expanded(child: _buildFieldInline('Quantidade', data.quantidade?.toString())),
+                        _verticalSep(),
+                        Expanded(
+                          flex: 2,
+                          child: _buildFieldInline('Valor', _formatCurrency(data.valor ?? data.docValor)),
+                        ),
+                        _verticalSep(),
+                        Expanded(
+                          flex: 2,
+                          child: _buildFieldInline('Valor do Documento', _formatCurrency(data.docValor ?? data.valor)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          _buildVerticalDivider(),
-          // Coluna direita (campos de cobrança)
-          SizedBox(
-            width: paperWidthDots == 576 ? 130 : 100,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildField('Vencimento', _vencimento, bold: true),
-                _buildDivider(),
-                _buildField('Agência/Cód. Beneficiário', data.agencia ?? ''),
-                _buildDivider(),
-                _buildField('(-) Desconto/Abatimento', ''),
-                _buildDivider(),
-                _buildField('(-) Outras Deduções', ''),
-                _buildDivider(),
-                _buildField('(+) Juros/Multa', ''),
-                _buildDivider(),
-                _buildField('(+) Outros Acréscimos', ''),
-                _buildDivider(),
-                _buildField('Valor Cobrado', ''),
-              ],
+
+            // Separador vertical
+            Container(width: 1, color: Colors.black, margin: EdgeInsets.symmetric(horizontal: _padding / 2)),
+
+            // Coluna direita (campos de cobrança)
+            SizedBox(
+              width: sideColumnWidth,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildField('Vencimento', _vencimento, boldValue: true),
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+                  _buildField('Agência/Cód. Beneficiário', data.agenciaCodigoBeneficiario),
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+                  _buildField('(-) Desconto/Abatimento', _formatCurrency(data.descontoAbatimento)),
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+                  _buildField('(-) Outras Deduções', _formatCurrency(data.outrasDeducoes)),
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+                  _buildField('(+) Juros/Multa', _formatCurrency(data.jurosMulta)),
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+                  _buildField('(+) Outros Acréscimos', _formatCurrency(data.outrosAcrescimos)),
+                  Divider(height: 6, color: Colors.black, thickness: 0.5),
+                  _buildField('Valor Cobrado', _formatCurrency(data.valorCobrado)),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -212,21 +288,21 @@ class BoletoWidget extends StatelessWidget {
   Widget _buildInstrucoesRow() {
     final instrucoes = data.instrucoes ?? [];
     return Padding(
-      padding: EdgeInsets.symmetric(vertical: _padding / 2, horizontal: _padding / 2),
+      padding: EdgeInsets.symmetric(vertical: _padding / 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Instruções - Todas as informações deste boleto são de exclusiva responsabilidade do beneficiário',
-            style: TextStyle(fontSize: _fontSizeSm, color: Colors.black),
+            'Instruções:',
+            style: TextStyle(fontSize: _fontSizeSm, color: Colors.black, fontWeight: FontWeight.bold),
           ),
+          SizedBox(height: 2),
           ...instrucoes.map(
             (i) => Text(
               i,
               style: TextStyle(
-                fontSize: _fontSizeSm,
+                fontSize: _fontSizeXs,
                 color: Colors.black,
-                fontWeight: FontWeight.bold,
               ),
             ),
           ),
@@ -237,10 +313,13 @@ class BoletoWidget extends StatelessWidget {
 
   // ── Pagador / Avalista ───────────────────────────────────────────────────
   Widget _buildPagadorRow() {
+    final sideColumnWidth = (paperWidthDots * (120.0 / 576.0)).roundToDouble();
+
     return IntrinsicHeight(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Pagador (grande)
           Expanded(
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: _padding / 2, vertical: 2),
@@ -248,25 +327,41 @@ class BoletoWidget extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Pagador', style: TextStyle(fontSize: _fontSizeSm, color: Colors.black)),
+                  SizedBox(height: 2),
                   Text(
-                    data.pagador,
+                    data.pagador ?? '',
                     style: TextStyle(fontSize: _fontSize, color: Colors.black, fontWeight: FontWeight.bold),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  if (data.conta != null)
-                    Text(data.conta!, style: TextStyle(fontSize: _fontSizeSm, color: Colors.black)),
+                  if ((data.pagadorAvalista ?? '').isNotEmpty) ...[
+                    SizedBox(height: 4),
+                    Text('Avalista:', style: TextStyle(fontSize: _fontSizeSm, color: Colors.black)),
+                    Text(
+                      data.pagadorAvalista ?? '',
+                      style: TextStyle(fontSize: _fontSizeXs, color: Colors.black),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
-          _buildVerticalDivider(),
+
+          // Separador vertical
+          Container(width: 1, color: Colors.black, margin: EdgeInsets.symmetric(horizontal: _padding / 2)),
+
+          // Autenticação mecânica
           SizedBox(
-            width: paperWidthDots == 576 ? 130 : 100,
+            width: sideColumnWidth,
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: _padding / 2, vertical: 2),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Autenticação Mecânica', style: TextStyle(fontSize: _fontSizeSm, color: Colors.black)),
+                  Text('Autenticação Mecânica', style: TextStyle(fontSize: _fontSizeXs, color: Colors.black)),
+                  SizedBox(height: 8),
                   Text('Ficha de Compensação', style: TextStyle(fontSize: _fontSizeSm, color: Colors.black, fontWeight: FontWeight.bold)),
                 ],
               ),
@@ -279,43 +374,63 @@ class BoletoWidget extends StatelessWidget {
 
   // ── Barcode ──────────────────────────────────────────────────────────────
   Widget _buildBarcode() {
+    final contentWidth = (paperWidthDots - 2 * _padding).roundToDouble();
+
     return Padding(
-      padding: EdgeInsets.only(top: _padding / 2),
-      child: barcodeImageBytes != null
-          ? Image.memory(
-              barcodeImageBytes!,
-              fit: BoxFit.fill,
-              filterQuality: FilterQuality.none, // sem interpolação!
-              height: paperWidthDots == 576 ? 60 : 50,
-            )
-          : Container(
-              height: paperWidthDots == 576 ? 60 : 50,
-              color: Colors.grey[200],
-              child: Center(
-                child: Text(
-                  'Barcode',
-                  style: TextStyle(fontSize: _fontSizeSm, color: Colors.grey),
+      padding: EdgeInsets.only(top: _padding / 3),
+      child: SizedBox(
+        height: _barcodeHeight,
+        width: double.infinity,
+        child: Center(
+          child: barcodeImageBytes != null
+              ? Image.memory(
+                  barcodeImageBytes!,
+                  width: contentWidth,
+                  height: _barcodeHeight,
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.none,
+                )
+              : Container(
+                  width: contentWidth,
+                  height: _barcodeHeight,
+                  color: Colors.grey[200],
+                  alignment: Alignment.center,
+                  child: Text(
+                    'Barcode',
+                    style: TextStyle(
+                      fontSize: _fontSizeSm,
+                      color: Colors.grey,
+                    ),
+                  ),
                 ),
-              ),
-            ),
+        ),
+      ),
     );
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
-  Widget _buildField(String label, String value, {bool bold = false}) {
+  Widget _buildField(String label, String? value, {bool boldValue = false}) {
+    final display = (value ?? '').trim();
     return Padding(
-      padding: EdgeInsets.symmetric(horizontal: _padding / 2, vertical: 2),
+      padding: EdgeInsets.symmetric(horizontal: _padding / 2, vertical: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(label, style: TextStyle(fontSize: _fontSizeSm - 1, color: Colors.black)),
           Text(
-            value,
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: _fontSizeXs, color: Colors.black),
+          ),
+          SizedBox(height: 2),
+          Text(
+            display,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontSize: _fontSize,
               color: Colors.black,
-              fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+              fontWeight: boldValue ? FontWeight.bold : FontWeight.normal,
             ),
           ),
         ],
@@ -323,7 +438,17 @@ class BoletoWidget extends StatelessWidget {
     );
   }
 
-  Widget _buildDivider() => const Divider(color: Colors.black, thickness: 0.5, height: 1);
+  Widget _buildFieldInline(String label, String? value) {
+    final display = (value ?? '').trim();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: TextStyle(fontSize: _fontSizeXs, color: Colors.black)),
+        SizedBox(height: 2),
+        Text(display, style: TextStyle(fontSize: _fontSizeSm, color: Colors.black, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+      ],
+    );
+  }
 
-  Widget _buildVerticalDivider() => const VerticalDivider(color: Colors.black, thickness: 0.5, width: 1);
+  Widget _verticalSep() => Container(width: 1, color: Colors.black, margin: EdgeInsets.symmetric(horizontal: 4));
 }

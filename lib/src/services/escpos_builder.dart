@@ -15,6 +15,23 @@ class EscPosBuilder {
     return Generator(paperSize, profile);
   }
 
+  String _formatCurrency(double? value) {
+    if (value == null) return '-';
+    return 'R\$ ${value.toStringAsFixed(2)}';
+  }
+
+  String _formatDate(DateTime? dt) {
+    if (dt == null) return '-';
+    return '${dt.day.toString().padLeft(2, '0')}/'
+        '${dt.month.toString().padLeft(2, '0')}/'
+        '${dt.year}';
+  }
+
+  DateTime? _resolveVencimento(BoletoData boleto) {
+    // prioridade: vencimento explícito → docData → processamentoData
+    return boleto.vencimento ?? boleto.docData ?? boleto.processamentoData;
+  }
+
   /// Constrói os bytes para impressão de um [BoletoData].
   Future<List<int>> buildBoleto(
     BoletoData boleto, {
@@ -35,25 +52,44 @@ class EscPosBuilder {
     );
     bytes += generator.hr();
 
+    // ── Cabeçalho com banco (opcional)
+    if ((boleto.nomeBanco ?? '').isNotEmpty ||
+        (boleto.numeroDigitoBanco ?? '').isNotEmpty) {
+      final bancoLine = [
+        if (boleto.nomeBanco != null && boleto.nomeBanco!.isNotEmpty)
+          boleto.nomeBanco!,
+        if (boleto.numeroDigitoBanco != null &&
+            boleto.numeroDigitoBanco!.isNotEmpty)
+          ' ${boleto.numeroDigitoBanco!}',
+      ].join();
+      bytes += generator.text(bancoLine, styles: const PosStyles(bold: true));
+      bytes += generator.hr();
+    }
+
     // ── Beneficiário / Pagador ──────────────────────────────────
-    bytes += generator.text(
-      'Beneficiário:',
-      styles: const PosStyles(bold: true),
-    );
-    bytes += generator.text(boleto.beneficiario);
-    bytes += generator.text(
-      'Pagador:',
-      styles: const PosStyles(bold: true),
-    );
-    bytes += generator.text(boleto.pagador);
+    if (boleto.beneficiario != null && boleto.beneficiario!.isNotEmpty) {
+      bytes += generator.text(
+        'Beneficiário:',
+        styles: const PosStyles(bold: true),
+      );
+      bytes += generator.text(boleto.beneficiario!);
+    }
+
+    if (boleto.pagador != null && boleto.pagador!.isNotEmpty) {
+      bytes += generator.text(
+        'Pagador:',
+        styles: const PosStyles(bold: true),
+      );
+      bytes += generator.text(boleto.pagador!);
+    }
     bytes += generator.hr();
 
     // ── Valor e Vencimento (lado a lado) ───────────────────────
-    final valorFormatado = 'R\$ ${boleto.valor.toStringAsFixed(2)}';
-    final vencimentoFormatado =
-        '${boleto.vencimento.day.toString().padLeft(2, '0')}/'
-        '${boleto.vencimento.month.toString().padLeft(2, '0')}/'
-        '${boleto.vencimento.year}';
+    final valorParaExibir = boleto.valor ?? boleto.docValor ?? boleto.valorCobrado;
+    final valorFormatado = _formatCurrency(valorParaExibir);
+
+    final vencimentoDate = _resolveVencimento(boleto);
+    final vencimentoFormatado = _formatDate(vencimentoDate);
 
     bytes += generator.row([
       PosColumn(
@@ -80,12 +116,24 @@ class EscPosBuilder {
     ]);
     bytes += generator.hr();
 
-    // ── Nosso Número ────────────────────────────────────────────
-    bytes += generator.text(
-      'Nosso Número:',
-      styles: const PosStyles(bold: true),
-    );
-    bytes += generator.text(boleto.nossoNumero);
+    // ── Nosso Número (opcional) ───────────────────────────────
+    if (boleto.nossoNumero != null && boleto.nossoNumero!.isNotEmpty) {
+      bytes += generator.text(
+        'Nosso Número:',
+        styles: const PosStyles(bold: true),
+      );
+      bytes += generator.text(boleto.nossoNumero!);
+    }
+
+    // ── Agência / Beneficiário (opcional)
+    if (boleto.agenciaCodigoBeneficiario != null &&
+        boleto.agenciaCodigoBeneficiario!.isNotEmpty) {
+      bytes += generator.text(
+        'Agência / Beneficiário:',
+        styles: const PosStyles(bold: true),
+      );
+      bytes += generator.text(boleto.agenciaCodigoBeneficiario!);
+    }
 
     // ── Instruções ──────────────────────────────────────────────
     if (boleto.instrucoes != null && boleto.instrucoes!.isNotEmpty) {
@@ -95,6 +143,7 @@ class EscPosBuilder {
         styles: const PosStyles(bold: true),
       );
       for (final instrucao in boleto.instrucoes!) {
+        if (instrucao.trim().isEmpty) continue;
         bytes += generator.text('- $instrucao');
       }
     }
@@ -102,33 +151,49 @@ class EscPosBuilder {
     bytes += generator.hr();
 
     // ── Linha Digitável ─────────────────────────────────────────
-    bytes += generator.text(
-      'Linha Digitável:',
-      styles: const PosStyles(bold: true, align: PosAlign.center),
-    );
-    bytes += generator.text(
-      boleto.linhaDigitavel,
-      styles: const PosStyles(align: PosAlign.center),
-    );
+    final linhaDigitavel =
+      (boleto.linhaDigitavel?.trim().isNotEmpty ?? false)
+          ? boleto.linhaDigitavel!.trim()
+          : (boleto.numeroBoleto?.trim() ?? '');
+
+    if (linhaDigitavel.isNotEmpty) {
+      bytes += generator.text(
+        'Linha Digitável:',
+        styles: const PosStyles(bold: true, align: PosAlign.center),
+      );
+      bytes += generator.text(
+        linhaDigitavel,
+        styles: const PosStyles(align: PosAlign.center),
+      );
+    }
 
     // ── Código de Barras (CODE128) ──────────────────────────────
     bytes += generator.feed(1);
-    final cleanedBarcode = boleto.codigoBarras.replaceAll(RegExp(r'\D'), '');
-    assert(
-      cleanedBarcode.length == 44,
-      'EscPosBuilder: codigoBarras deve ter exatamente 44 dígitos. '
-      'Recebido: ${cleanedBarcode.length} (valor: ${boleto.codigoBarras})',
-    );
-    if (cleanedBarcode.length == 44) {
-      final barcodeBytes = _barcodeService.buildBarcodeBytes(
-        generator,
-        cleanedBarcode, // passa já limpo
-        height: 60,
-        width: 2,
-        align: PosAlign.center,
-      );
-      if (barcodeBytes.isNotEmpty) {
-        bytes += barcodeBytes;
+
+    final rawBarcode = boleto.codigoBarras;
+    final cleanedBarcode = rawBarcode.replaceAll(RegExp(r'\D'), '');
+
+    if (cleanedBarcode.isEmpty) {
+      // não imprime barcode nativo se não houver dados
+    } else {
+      if (cleanedBarcode.length != 44) {
+        assert(
+          cleanedBarcode.length == 44,
+          'EscPosBuilder: codigoBarras deve ter exatamente 44 dígitos. '
+          'Recebido: ${cleanedBarcode.length} (valor: $rawBarcode)',
+        );
+      }
+      if (cleanedBarcode.length == 44) {
+        final barcodeBytes = _barcodeService.buildBarcodeBytes(
+          generator,
+          cleanedBarcode,
+          height: 60,
+          width: 2,
+          align: PosAlign.center,
+        );
+        if (barcodeBytes.isNotEmpty) {
+          bytes += barcodeBytes;
+        }
       }
     }
 
